@@ -1,0 +1,43 @@
+﻿#pragma kernel PBuffToRT
+#pragma kernel DBuffToRT
+#pragma kernel FBuffToRT
+#define SIMULATION_BLOCK_SIZE 256
+#include "../Resources/Struct.cginc"
+
+StructuredBuffer<Particle> _ParticleBuff;
+StructuredBuffer<float> _DensityBuff;
+StructuredBuffer<float4> _ForceBuff;
+RWTexture2D<float4> _OutRT;
+int _ClmCount;
+int _RowCount;
+float _RangeMapper;
+
+[numthreads(SIMULATION_BLOCK_SIZE, 1, 1)]
+void PBuffToRT (uint3 id : SV_DispatchThreadID)
+{
+    if (id.x < (uint) _ClmCount && id.y < (uint)_RowCount)
+    {
+        float3 p = _ParticleBuff[id.x * (id.y + 1)].pos;
+        _OutRT[id.xy] = float4(p.xyz * _RangeMapper, 1);
+    }
+}
+
+[numthreads(SIMULATION_BLOCK_SIZE, 1, 1)]
+void DBuffToRT (uint3 id : SV_DispatchThreadID)
+{
+    if (id.x < (uint) _ClmCount && id.y < (uint) _RowCount)
+    {
+        float d = _DensityBuff[id.x * (id.y + 1)];
+        _OutRT[id.xy] = float4(d * _RangeMapper, 0, 0, 1);
+    }
+}
+
+[numthreads(SIMULATION_BLOCK_SIZE, 1, 1)]
+void FBuffToRT (uint3 id : SV_DispatchThreadID)
+{
+    if (id.x < (uint) _ClmCount && id.y < (uint) _RowCount)
+    {
+        float4 f = _ForceBuff[id.x * (id.y + 1)];
+        _OutRT[id.xy] = float4(f.xyz * _RangeMapper, 1);
+    }
+}

@@ -1,0 +1,150 @@
+﻿#pragma kernel SimDensity
+#pragma kernel SimForce
+#pragma kernel SimIntegrate
+#define SIMULATION_BLOCK_SIZE 256 
+#define boxSize 2
+
+#include "../Resources/Struct.cginc"
+#include "../Resources/SortUtil.cginc"
+
+StructuredBuffer<Particle> _ParticlesBufferRO;
+RWStructuredBuffer<Particle> _ParticlesBufferRW;
+StructuredBuffer<float> _DensityBufferRO;
+RWStructuredBuffer<float> _DensityBufferRW;
+StructuredBuffer<float4> _ForceBufferRO;
+RWStructuredBuffer<float4> _ForceBufferRW;
+
+int _NumParticles;
+float _TimeStep;
+float _Smoothlen;
+float _PressureStiffness;
+float _RestDensity;
+float _DensityCoef;
+float _GradPressureCoef;
+float _LapViscosityCoef;
+float _Restitution;
+float _MaxVelocity;
+
+// other condition
+float3 _SpherePos;
+float1 _SphereRad;
+float1 _Time;
+
+float nrand(float2 uv) {
+    return frac(sin(dot(uv, float2(12.9898, 78.233))) * 43758.5453);
+}
+
+float CalculateDensity(float r_sq){
+    const float h_sq = _Smoothlen * _Smoothlen;
+    return _DensityCoef * (h_sq - r_sq) * (h_sq - r_sq) * (h_sq - r_sq);
+}
+
+float CalculatePressure(float density){
+    return _PressureStiffness * max(pow(density / _RestDensity, 3) - 1, 0);
+}
+
+float3 CalculateGradPressure(float r, float P_pressure, float N_pressure, float N_density, float3 diff){
+    const float h = _Smoothlen;
+    float avg_pressure = 0.5f * (N_pressure + P_pressure);
+    return _GradPressureCoef * avg_pressure / N_density * (h - r) * (h - r) / r * (diff);
+}
+
+float3 CalculateLapVelocity(float r, float3 P_velocity, float3 N_velocity, float N_density){
+    const float h = _Smoothlen;
+    float3 vel_diff = (N_velocity - P_velocity);
+    return _LapViscosityCoef / N_density * (h - r) * vel_diff;
+}
+
+
+[numthreads(SIMULATION_BLOCK_SIZE, 1, 1)]
+void SimDensity(uint3 DTid : SV_DispatchThreadID) {
+    uint id = DTid.x;
+    float h_sq = _Smoothlen * _Smoothlen;
+    float density = 0;
+    float3 thisPos = _ParticlesBufferRO[id].pos;
+    int3 thisGrid = (int3) GridCalculateCell(thisPos);
+
+    for (int Z = max(thisGrid.z - 1, 0); Z <= min(thisGrid.z + 1, _GridDim.z - 1); Z++)
+        for (int Y = max(thisGrid.y - 1, 0); Y <= min(thisGrid.y + 1, _GridDim.y - 1); Y++)
+            for (int X = max(thisGrid.x - 1, 0); X <= min(thisGrid.x + 1, _GridDim.x - 1); X++) {
+                uint G_CELL = GridKey(uint3(X, Y, Z));
+                uint2 G_START_END = _GridIndicesBufferRead[G_CELL];
+
+                for (uint N_ID = G_START_END.x; N_ID < G_START_END.y; N_ID++) {
+                    float3 thatPos = _ParticlesBufferRO[N_ID].pos;
+                    float3 diff = thatPos - thisPos;
+                    float r_sq = dot(diff, diff);
+                    density += (r_sq < h_sq && id != N_ID) ? CalculateDensity(r_sq) : 0;
+                }
+            }
+    _DensityBufferRW[id] = density;
+}
+
+[numthreads(SIMULATION_BLOCK_SIZE, 1, 1)]
+void SimForce(uint3 DTid : SV_DispatchThreadID) {
+    const uint id = DTid.x;
+    const float h_sq = _Smoothlen * _Smoothlen;
+    float3 thisPos = _ParticlesBufferRO[id].pos;
+    float3 thisVel = _ParticlesBufferRO[id].vel;
+    float thisDen = _DensityBufferRO[id];
+    float thisPrs = CalculatePressure(thisDen);
+    int3 thisGrid = (int3) GridCalculateCell(thisPos);
+    float3 accelaration = float3(0, 0, 0);
+
+    for (int Z = max(thisGrid.z - 1, 0); Z <= min(thisGrid.z + 1, _GridDim.z - 1); Z++)
+        for (int Y = max(thisGrid.y - 1, 0); Y <= min(thisGrid.y + 1, _GridDim.y - 1); Y++)
+            for (int X = max(thisGrid.x - 1, 0); X <= min(thisGrid.x + 1, _GridDim.x - 1); X++)
+            {
+                uint G_CELL = GridKey(uint3(X, Y, Z));
+                uint2 G_START_END = _GridIndicesBufferRead[G_CELL];
+                for (uint N_ID = G_START_END.x; N_ID < G_START_END.y; N_ID++)
+                {
+                    float3 thatPos = _ParticlesBufferRO[N_ID].pos;
+                    float3 diff = thatPos - thisPos;
+                    float r_sq = dot(diff, diff);
+                    if (r_sq < h_sq && id != N_ID)
+                    {
+                        float3 thatVel = _ParticlesBufferRO[N_ID].vel;
+                        float thatDen = _DensityBufferRO[N_ID];
+                        float thatPrs = CalculatePressure(thatDen);
+                        float r = sqrt(r_sq);
+                        accelaration += CalculateGradPressure(r, thisPrs, thatPrs, thatDen, diff);
+                        accelaration += CalculateLapVelocity(r, thisVel, thatVel, thatDen);
+                    }
+                }
+            }
+    _ForceBufferRW[id] = float4(accelaration / thisDen, 1);
+}
+
+float3 BoundaryCondition(float3 pos, float3 vel)
+{
+    // sphere condition
+    float3 dif = pos - _SpherePos;
+    float3 dir = normalize(dif);
+    float1 dst = length(dif);
+    if (dst < _SphereRad && dot(dir, vel) < 0)
+        return (-0.99).xxx + nrand(float2(_Time.x, pos.x)) * dir;
+
+    // box condition
+    return float3(((pos.x >= boxSize - 0.05 && vel.x > 0) || (pos.x <= 0.05 && vel.x < 0)) ? -0.9 : 1,
+                  ((pos.y >= boxSize - 0.05 && vel.y > 0) || (pos.y <= 0.05 && vel.y < 0)) ? -0.9 : 1,
+                  ((pos.z >= boxSize - 0.05 && vel.z > 0) || (pos.z <= 0.05 && vel.z < 0)) ? -0.9 : 1);
+}
+
+[numthreads(SIMULATION_BLOCK_SIZE, 1, 1)]
+void SimIntegrate(uint3 DTid : SV_DispatchThreadID) {
+    const uint id = DTid.x;
+    float3 pos = _ParticlesBufferRO[id].pos;
+    float3 vel = _ParticlesBufferRO[id].vel;
+    float3 col = _ParticlesBufferRO[id].col;
+    float3 acc = clamp(_ForceBufferRO[id].xyz, -90000000, 90000000) - float3(0, 500000, 0);
+
+    vel += acc * _TimeStep;
+    vel = (length(vel) > _MaxVelocity) ? normalize(vel) * _MaxVelocity : vel;
+    vel *= BoundaryCondition(pos, vel);
+    pos += vel * _TimeStep;
+    pos = clamp(pos, 0, 2);
+    _ParticlesBufferRW[id].pos = pos;
+    _ParticlesBufferRW[id].vel = vel;
+    _ParticlesBufferRW[id].col = pos;
+}
