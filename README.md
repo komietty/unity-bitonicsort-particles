@@ -3,8 +3,6 @@
 Unity base bitonic sort particle simulation demo with sorting debug view option.
 Debug view represents xyz-position of each particle with particle-id order.
 
-![img](Imgs/result.gif)
-
 ![img](Imgs/debug.gif)
 
 ## Compatibility
