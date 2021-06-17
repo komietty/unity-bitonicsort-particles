@@ -1,7 +1,7 @@
 # unity-bitonicsort-particles
 
 Unity base bitonic sort particle simulatior library.
- view represents xyz-position of each particle with particle-id order.
+Sorting view represents xyz-position of each particle with particle-id order.
 
 <img src="Imgs/sort.gif" width=50%><img src="Imgs/demo.gif" width=50%>
 
