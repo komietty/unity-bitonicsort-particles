@@ -1,13 +1,10 @@
 # unity-bitonicsort-particles
 
-Unity base bitonic sort particle simulation demo with sorting debug view option.
+Unity base bitonic sort particle simulatior library.
+
 Debug view represents xyz-position of each particle with particle-id order.
 
-![img](Imgs/debug.gif)
-
-## Compatibility
-
-tested on Unity 2019.2.12f1, windows10 (RTX 2080 max-q, GTX 1060).
+<img src="Imgs/sort.gif" width=50%><img src="Imgs/demo.gif" width=50%>
 
 ## Reference
 
